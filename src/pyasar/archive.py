@@ -142,9 +142,12 @@ class AsarArchive:
             raise OSError("cannot read a symbolic link as a regular file")
         size = _file_size(node)
         if node.get("unpacked") is True:
-            source = self.path.with_name(self.path.name + ".unpacked") / Path(
-                *_parts(name)
-            )
+            sidecar = self.path.parent.resolve() / (self.path.name + ".unpacked")
+            if sidecar.resolve() != sidecar:
+                raise AsarFormatError("unpacked root must not be a filesystem link")
+            source = sidecar.joinpath(*_parts(name)).resolve()
+            if sidecar not in source.parents:
+                raise AsarFormatError(f"unpacked file escapes sidecar: {name}")
             try:
                 data = source.read_bytes()
             except FileNotFoundError as error:
@@ -163,6 +166,26 @@ class AsarArchive:
             if expected and hashlib.sha256(data).hexdigest() != expected:
                 raise AsarError(f"integrity check failed: {name}")
         return data
+
+    def _link_is_directory(self, name: str) -> bool:
+        """Resolve header links, including links in intermediate components."""
+        parts = _parts(name)
+        seen: set[tuple[str, ...]] = set()
+        for _ in range(40):
+            if parts in seen:
+                raise AsarFormatError(f"circular symbolic link: {name}")
+            seen.add(parts)
+            node = self.header
+            for index, part in enumerate(parts):
+                node = node.get("files", {}).get(part)
+                if node is None:
+                    return False  # Preserve dangling links as file links.
+                if "link" in node:
+                    parts = _parts(node["link"]) + parts[index + 1 :]
+                    break
+            else:
+                return "files" in node
+        raise AsarFormatError(f"too many symbolic links: {name}")
 
     def extract(
         self, destination: str | os.PathLike[str], *, verify: bool = False
@@ -197,9 +220,14 @@ class AsarArchive:
                 resolved_link = link_target.resolve()
                 if root not in (resolved_link, *resolved_link.parents):
                     raise AsarFormatError(f"symbolic link escapes destination: {name}")
-                output.symlink_to(os.path.relpath(link_target, output.parent))
+                output.symlink_to(
+                    os.path.relpath(link_target, output.parent),
+                    target_is_directory=self._link_is_directory(link),
+                )
             else:
                 output.write_bytes(self.read(name, verify=verify))
+                if os.name != "nt" and node.get("executable") is True:
+                    output.chmod(0o755)
 
 
 def open_archive(path: str | os.PathLike[str]) -> AsarArchive:

@@ -1,11 +1,87 @@
 import json
 import os
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from pyasar import AsarFormatError, open_archive, pack
+
+
+def _directory_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$ErrorActionPreference='Stop'; New-Item -ItemType Junction "
+             "-Path $env:PYASAR_TEST_LINK -Target $env:PYASAR_TEST_TARGET | Out-Null"],
+            check=True, capture_output=True,
+            env={**os.environ, "PYASAR_TEST_LINK": str(link),
+                 "PYASAR_TEST_TARGET": str(target)},
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_pack_preserves_source_inside_sidecar(tmp_path, nested):
+    archive = tmp_path / "app.asar"
+    archive.write_bytes(b"original archive")
+    source = tmp_path / "app.asar.unpacked"
+    if nested:
+        source /= "nested"
+    source.mkdir(parents=True)
+    content = source / "important.txt"
+    content.write_bytes(b"original source")
+    with pytest.raises(ValueError, match="must not contain"):
+        pack(source, archive)
+    assert content.read_bytes() == b"original source"
+    assert archive.read_bytes() == b"original archive"
+
+
+@pytest.mark.parametrize("root_link", [False, True])
+def test_unpacked_links_cannot_read_external_files(tmp_path, root_link):
+    archive = tmp_path / "app.asar"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.node").write_bytes(b"private")
+    sidecar = tmp_path / "app.asar.unpacked"
+    files = {"private.node": {"size": 7, "unpacked": True}}
+    name = "private.node"
+    if root_link:
+        _directory_link(sidecar, outside)
+    else:
+        sidecar.mkdir()
+        _directory_link(sidecar / "external", outside)
+        files = {"external": {"files": files}}
+        name = "external/private.node"
+    _write_archive_header(archive, {"files": files})
+    opened = open_archive(archive)
+    with pytest.raises(AsarFormatError, match="unpacked"):
+        opened.read(name)
+    with pytest.raises(AsarFormatError, match="unpacked"):
+        opened.extract(tmp_path / "out")
+    assert not (tmp_path / "out" / name).exists()
+    assert (outside / "private.node").read_bytes() == b"private"
+
+
+def test_directory_link_chains_and_cycles(tmp_path, monkeypatch):
+    archive = tmp_path / "app.asar"
+    _write_archive_header(archive, {"files": {
+        "alias": {"link": "middle/sub"},
+        "middle": {"link": "folder"},
+        "folder": {"files": {"sub": {"files": {}}}},
+    }})
+    calls = []
+    monkeypatch.setattr(Path, "symlink_to", lambda self, target, **kw:
+                        calls.append((self.name, kw["target_is_directory"])))
+    open_archive(archive).extract(tmp_path / "out")
+    assert calls == [("alias", True), ("middle", True)]
+    _write_archive_header(archive, {"files": {
+        "a": {"link": "b"}, "b": {"link": "a"},
+    }})
+    with pytest.raises(AsarFormatError, match="circular"):
+        open_archive(archive).extract(tmp_path / "cycle")
 
 
 def _write_archive_header(path: Path, header: dict) -> None:

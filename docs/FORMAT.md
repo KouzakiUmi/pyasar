@@ -37,9 +37,15 @@ block hashes individually.
 ## Interoperability boundary
 
 The layout follows the format used by Electron ASAR tooling. Compatibility is
-tested for archives created by pyasar itself. Before relying on a new Electron
-release or an archive producer with legacy output, add a fixture from that
-producer and test it with open_archive.
+tested with pyasar round trips and bidirectional integration against official
+@electron/asar 4.3.0. The integration test covers packed and unpacked files,
+Unicode names, empty directories, and SHA-256 blocks at the 4 MiB boundary.
+To run it, install @electron/asar outside this project, set
+PYASAR_OFFICIAL_MODULE to its absolute lib/asar.js path, and run pytest with
+Node.js available on PATH. Without that variable the integration test is skipped.
+
+pyasar additionally restricts sidecar filesystem links and preserves symbolic
+links on Windows. These are intentional API differences from the official tool.
 
 See the upstream format description and implementation:
 https://github.com/electron/asar#format

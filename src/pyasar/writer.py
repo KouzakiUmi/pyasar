@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import struct
 from pathlib import Path
 from typing import Callable
@@ -79,6 +80,8 @@ def pack(
     if output.is_dir():
         raise IsADirectoryError(output)
     unpack_root = output.with_name(output.name + ".unpacked")
+    if _is_within(root, unpack_root.resolve()):
+        raise ValueError("unpacked destination must not contain the source directory")
     _clean_unpack_root(unpack_root)
     files: dict[str, object] = {}
     payloads: list[Path] = []
@@ -117,6 +120,8 @@ def pack(
                 "size": size,
                 "integrity": _integrity(item),
             }
+            if os.name != "nt" and item.stat().st_mode & stat.S_IXUSR:
+                node["executable"] = True
             if unpacked:
                 node["unpacked"] = True
                 target = unpack_root / relative

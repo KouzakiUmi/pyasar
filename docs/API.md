@@ -62,6 +62,9 @@ For unpacked files, bytes are read from the sibling directory whose name is the
 archive filename plus .unpacked. For example, app.asar and lib/native.node map
 to app.asar.unpacked/lib/native.node.
 
+The sidecar root must not itself be a symbolic link or junction. Resolved file
+paths must remain inside that root; escaping links raise AsarFormatError.
+
 If the requested number of bytes cannot be read, EOFError is raised. A missing
 unpacked sidecar raises FileNotFoundError.
 
@@ -85,6 +88,12 @@ when extracted and must resolve inside the extraction directory; otherwise
 AsarFormatError is raised. Existing symlinked parent directories that escape
 the destination are also rejected. This operation is not transactional: if a
 later entry fails, files extracted before it remain in destination.
+
+Directory links are identified from the archive header, including link chains.
+Circular or excessively deep chains raise AsarFormatError. Dangling links are
+created as file links. On POSIX systems, executable: true sets permissions to
+0755, matching Electron ASAR extraction. On Windows, pyasar preserves symbolic
+links rather than expanding them into regular files as the official tool does.
 
 ## extract(path, destination, verify=False)
 
@@ -111,6 +120,11 @@ marked unpacked.
 
 Symbolic links are resolved and represented as archive-root-relative ASAR link
 nodes. Links whose targets fall outside source are refused with ValueError.
+
+Before clearing a stale sidecar, pack rejects a source equal to or contained in
+the resolved sidecar directory with ValueError, preserving the source data.
+On POSIX systems, the owner's execute bit is recorded as executable: true for
+both packed and unpacked files.
 
 filter, when supplied, is called once for every discovered relative Path,
 including directories. Returning false omits that item. It does not prune

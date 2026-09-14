@@ -7,6 +7,40 @@ import pytest
 from pyasar import extract, open_archive, pack
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
+@pytest.mark.parametrize("suffix", [".sh", ".node"])
+def test_executable_permissions_roundtrip(tmp_path, suffix):
+    source = tmp_path / "source"
+    source.mkdir()
+    executable = source / ("helper" + suffix)
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o744)
+    ordinary = source / "data.txt"
+    ordinary.write_bytes(b"data")
+    ordinary.chmod(0o644)
+    archive = tmp_path / "app.asar"
+    pack(source, archive)
+    opened = open_archive(archive)
+    assert opened.info(executable.name)["executable"] is True
+    assert "executable" not in opened.info(ordinary.name)
+    opened.extract(tmp_path / "out", verify=True)
+    assert (tmp_path / "out" / executable.name).stat().st_mode & 0o777 == 0o755
+    assert not (tmp_path / "out" / ordinary.name).stat().st_mode & 0o111
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires symlink privileges on Windows")
+def test_real_directory_link_roundtrip(tmp_path):
+    source = tmp_path / "source"
+    (source / "folder").mkdir(parents=True)
+    (source / "folder" / "data").write_bytes(b"data")
+    (source / "alias").symlink_to("folder", target_is_directory=True)
+    archive = tmp_path / "app.asar"
+    pack(source, archive)
+    extract(archive, tmp_path / "out")
+    assert (tmp_path / "out" / "alias").is_symlink()
+    assert (tmp_path / "out" / "alias" / "data").read_bytes() == b"data"
+
+
 def test_pack_read_verify_and_extract(tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "nested").mkdir(parents=True)
