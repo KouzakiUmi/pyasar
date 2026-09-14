@@ -2,416 +2,204 @@
 
 [English](#english) | [简体中文](#简体中文)
 
-`pyasar` is a dependency-free Python library for inspecting, validating, reading,
-extracting, and creating modern Electron ASAR archives. It is a standalone
-project and is not a dependency of DeviConHan.
-
----
-
 ## English
 
-### Features
-
-- Read and write Electron's current JSON-header ASAR format.
-- Read packed files and `.asar.unpacked` sidecar files through one API.
-- Generate whole-file and 4 MiB block SHA-256 integrity metadata.
-- Preserve empty directories and archive-root-relative symbolic links.
-- Reject malformed headers, invalid payload ranges, path traversal, escaping
-  links, and symbolic-link output destinations.
-- Repack safely when the destination is located inside the source tree: the
-  output archive and its sidecar are excluded from the next pack.
-- Run on Python 3.9 or newer with no runtime dependencies.
+Python library for reading, validating, extracting, and creating Electron ASAR
+archives. Requires Python 3.9+; no runtime dependencies.
 
 ### Installation
 
-Install the latest code directly from GitHub:
-
 ```console
 python -m pip install "pyasar @ git+https://github.com/KouzakiUmi/pyasar.git"
 ```
 
-Or clone the repository and install it locally:
+From a local checkout:
 
 ```console
-git clone https://github.com/KouzakiUmi/pyasar.git
-cd pyasar
 python -m pip install .
 ```
 
-For development:
-
-```console
-python -m pip install -e ".[dev]"
-python -m pytest -q
-```
-
-### Quick start
+### Usage
 
 ```python
 from pyasar import extract, open_archive, pack
 
-# Create an archive from a directory.
 pack("app", "app.asar")
-
-# Inspect and read it without extracting everything.
-archive = open_archive("app.asar")
-print(archive.names())
-main_js = archive.read("main.js", verify=True)
-
-# Extract all files and verify integrity metadata when present.
-extract("app.asar", "output", verify=True)
-```
-
-### Inspect an archive
-
-`open_archive()` parses and structurally validates the header without loading
-all payloads into memory. `names()` returns regular files and symbolic links as
-POSIX-style paths; directory nodes are not included.
-
-```python
-from pyasar import open_archive
-
 archive = open_archive("app.asar")
 
 for name in archive.names():
-    metadata = archive.info(name)
-    print(name, metadata.get("size"), metadata.get("unpacked", False))
-```
+    print(name, archive.info(name))
 
-The repository also includes a small inspection example:
-
-```console
-python examples/inspect.py path/to/app.asar
-```
-
-### Read individual files
-
-```python
-from pyasar import open_archive
-
-archive = open_archive("app.asar")
-source = archive.read("dist/main.js")
-verified_source = archive.read("dist/main.js", verify=True)
-```
-
-With `verify=True`, `pyasar` compares the payload with `integrity.hash` when
-that field exists. An archive without integrity metadata can still be read, so
-this option detects corruption but does not establish publisher authenticity.
-
-For an unpacked entry, `read()` automatically loads the corresponding file
-from the sibling sidecar. For example:
-
-```text
-app.asar                          # header and packed payloads
-app.asar.unpacked/native/addon.node
-```
-
-### Extract an archive
-
-Use either the convenience function or the opened archive object:
-
-```python
-from pyasar import extract, open_archive
-
+content = archive.read("main.js", verify=True)
 extract("app.asar", "output", verify=True)
-
-archive = open_archive("another.asar")
-archive.extract("another-output")
 ```
 
-Extraction creates missing and empty directories. It refuses to overwrite an
-existing file or symbolic link. Extraction is not transactional: if a later
-entry fails, files written earlier remain in the destination.
+| API | Behavior |
+| --- | --- |
+| `open_archive(path)` | Parse and structurally validate the header without loading file payloads. |
+| `archive.names()` | List files and symbolic links as POSIX paths; exclude directories. |
+| `archive.info(name)` | Return raw entry metadata; treat it as read-only. |
+| `archive.read(name, verify=False)` | Read one complete file as bytes, including unpacked files; reject symbolic links. |
+| `archive.extract(destination, verify=False)` | Extract files, empty directories, and symbolic links. |
+| `pack(source, destination, *, unpack_extensions=..., filter=None)` | Create an archive from a directory. |
 
-On Windows, creating symbolic links may require Developer Mode or an elevated
-process. Normal filesystem filename restrictions also apply on the target
-platform.
+### Packing options
 
-### Create an archive
-
-By default, native `.node` modules are placed in `app.asar.unpacked`, matching
-the usual Electron layout:
+By default, `.node` files are stored in the sibling `app.asar.unpacked`
+directory. Pass an empty set to store every regular file in the archive:
 
 ```python
-from pyasar import pack
-
-pack("application-directory", "app.asar")
+pack("app", "app.asar", unpack_extensions=set())
 ```
 
-Keep every regular file inside the archive by passing an empty set:
-
-```python
-pack("application-directory", "app.asar", unpack_extensions=set())
-```
-
-Or choose additional unpacked extensions:
-
-```python
-pack(
-    "application-directory",
-    "app.asar",
-    unpack_extensions={".node", ".dll"},
-)
-```
-
-Extension matching is case-insensitive for source filenames; provide lowercase
-extensions in the set.
-
-Existing `app.asar.unpacked` content is removed before packing so deleted native
-files cannot survive in a stale sidecar. The destination archive itself is
-overwritten directly and packing is not transactional.
-
-### Filter files while packing
-
-The filter receives a `pathlib.Path` relative to the source directory:
+Use lowercase extensions to select other unpacked file types. The filter
+receives a source-relative `pathlib.Path` for each discovered file or directory:
 
 ```python
 from pathlib import Path
-
-from pyasar import pack
 
 
 def include(path: Path) -> bool:
     return ".git" not in path.parts and path.suffix.lower() != ".map"
 
 
-pack("app", "app.asar", filter=include)
+pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 ```
 
-The filter is called for both files and directories. Returning `False` for a
-directory does not prune traversal by itself, so test `path.parts` when an
-entire subtree must be excluded.
+Returning `False` for a directory does not prune its descendants; exclude each
+member of a subtree using `path.parts` when needed.
 
-### Error handling
+### Format and filesystem behavior
 
-```python
-from pyasar import AsarError, AsarFormatError, open_archive
+- Supports Pickle-framed JSON headers, packed and unpacked files, empty
+  directories, and archive-root-relative symbolic links. Legacy Chromium
+  header variants are unsupported.
+- Writes whole-file and 4 MiB block SHA-256 metadata. `verify=True` checks
+  `integrity.hash` when present; it does not independently verify block hashes
+  or authenticate the archive. Files without integrity metadata remain readable.
+- Limits header Pickles to 50 MiB and checks packed payload ranges. Unpacked
+  paths must resolve inside the sidecar; the sidecar root cannot be a symbolic
+  link or junction.
+- Extraction refuses to overwrite existing files or links. Both packing and
+  extraction are non-transactional; a failure may leave partial output.
+- Packing overwrites the archive and clears its old sidecar. It rejects a source
+  equal to or inside the resolved sidecar before cleanup. Outputs inside the
+  source tree are excluded from traversal.
+- On POSIX, packing records the owner's execute bit as `executable: true`;
+  extraction restores such files with mode `0755`.
+- Windows extraction preserves symbolic links and may require Developer Mode
+  or elevated privileges. Target filesystem naming rules still apply.
+- `read()` loads the entire requested file into memory; extraction uses this
+  method for each file. There is no public streaming API.
 
-try:
-    archive = open_archive("app.asar")
-    data = archive.read("main.js", verify=True)
-except AsarFormatError as error:
-    print(f"Unsafe or malformed ASAR: {error}")
-except AsarError as error:
-    print(f"Integrity failure: {error}")
-except (FileNotFoundError, PermissionError, EOFError) as error:
-    print(f"Filesystem or truncated-payload error: {error}")
+Malformed or unsafe archives raise `AsarFormatError`, a subclass of `AsarError`.
+Integrity mismatches raise `AsarError`. Filesystem errors retain their standard
+Python exception types; truncated payloads raise `EOFError`.
+
+### Development and compatibility tests
+
+```console
+python -m pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-Filesystem exceptions intentionally remain standard Python exceptions. In
-particular, missing sidecar files raise `FileNotFoundError`, truncated payloads
-raise `EOFError`, existing extraction targets raise `FileExistsError`, and a
-directory passed to `info()` raises `IsADirectoryError`.
+Bidirectional interoperability has been tested with `@electron/asar 4.3.0`,
+including unpacked files, Unicode names, empty directories, and hash block
+boundaries. To enable the optional integration test, install that package
+outside this checkout, put Node.js on `PATH`, and set `PYASAR_OFFICIAL_MODULE`
+to the absolute path of its `lib/asar.js`. Otherwise that test is skipped.
 
-### Compatibility and security boundary
-
-`pyasar` supports the modern Electron Pickle container with a JSON file table,
-regular files, unpacked files, relative links, and SHA-256 integrity entries. It
-does not implement historical Chromium ASAR header variants.
-
-Archive entry names and link targets are validated before access or extraction.
-The decoded header Pickle is limited to 50 MiB, and packed file ranges must fit
-inside the archive. These checks reduce accidental and malicious filesystem
-access, but they do not make untrusted executable content safe to run.
-
-For the exact API and format behavior, see [docs/API.md](docs/API.md) and
-[docs/FORMAT.md](docs/FORMAT.md).
-
----
+See the [API reference](docs/API.md) and [format specification](docs/FORMAT.md)
+for details.
 
 ## 简体中文
 
-### 功能概览
-
-- 读取和写入 Electron 当前使用的 JSON 头部 ASAR 格式。
-- 使用同一套 API 读取归档内文件和 `.asar.unpacked` 旁挂目录文件。
-- 生成整文件以及 4 MiB 分块的 SHA-256 完整性元数据。
-- 保留空目录和以归档根目录为基准的符号链接。
-- 拒绝格式错误的头部、越界数据、路径穿越、逃逸符号链接以及符号链接形式的输出文件。
-- 输出 ASAR 位于源目录内部时也可重复打包；下次打包会自动排除输出文件和旁挂目录。
-- 支持 Python 3.9 及以上版本，无运行时第三方依赖。
+用于读取、验证、解包和创建 Electron ASAR 归档的 Python 库。
+要求 Python 3.9 及以上版本，无运行时第三方依赖。
 
 ### 安装
-
-直接从 GitHub 安装最新代码：
 
 ```console
 python -m pip install "pyasar @ git+https://github.com/KouzakiUmi/pyasar.git"
 ```
 
-也可以克隆仓库后本地安装：
+在本地仓库中安装：
 
 ```console
-git clone https://github.com/KouzakiUmi/pyasar.git
-cd pyasar
 python -m pip install .
 ```
 
-开发环境安装与测试：
-
-```console
-python -m pip install -e ".[dev]"
-python -m pytest -q
-```
-
-### 快速开始
+### 使用
 
 ```python
 from pyasar import extract, open_archive, pack
 
-# 将目录打包为 ASAR。
 pack("app", "app.asar")
-
-# 在不解包全部文件的情况下检查并读取内容。
-archive = open_archive("app.asar")
-print(archive.names())
-main_js = archive.read("main.js", verify=True)
-
-# 解包所有文件，并在完整性元数据存在时进行校验。
-extract("app.asar", "output", verify=True)
-```
-
-### 检查归档
-
-`open_archive()` 会解析并验证头部结构，但不会把所有文件数据载入内存。
-`names()` 返回普通文件和符号链接的 POSIX 风格路径，不包含目录节点。
-
-```python
-from pyasar import open_archive
-
 archive = open_archive("app.asar")
 
 for name in archive.names():
-    metadata = archive.info(name)
-    print(name, metadata.get("size"), metadata.get("unpacked", False))
-```
+    print(name, archive.info(name))
 
-仓库中还提供了一个简单的检查示例：
-
-```console
-python examples/inspect.py path/to/app.asar
-```
-
-### 读取单个文件
-
-```python
-from pyasar import open_archive
-
-archive = open_archive("app.asar")
-source = archive.read("dist/main.js")
-verified_source = archive.read("dist/main.js", verify=True)
-```
-
-设置 `verify=True` 后，如果条目包含 `integrity.hash`，`pyasar` 会比较文件内容与该哈希值。
-没有完整性元数据的归档仍然可以读取，因此这个选项可以发现损坏，但不能证明发布者身份。
-
-如果条目标记为 unpacked，`read()` 会自动从同名旁挂目录读取对应文件。例如：
-
-```text
-app.asar                          # 头部和归档内数据
-app.asar.unpacked/native/addon.node
-```
-
-### 解包归档
-
-可以使用便捷函数，也可以调用已打开归档对象的方法：
-
-```python
-from pyasar import extract, open_archive
-
+content = archive.read("main.js", verify=True)
 extract("app.asar", "output", verify=True)
-
-archive = open_archive("another.asar")
-archive.extract("another-output")
 ```
 
-解包时会创建缺失目录和空目录，但不会覆盖已经存在的文件或符号链接。解包并非事务操作：
-如果后续条目失败，先前已写入目标目录的文件会保留。
+| API | 行为 |
+| --- | --- |
+| `open_archive(path)` | 解析并验证头部结构，不加载文件内容。 |
+| `archive.names()` | 以 POSIX 路径列出文件和符号链接，不包含目录。 |
+| `archive.info(name)` | 返回条目的原始元数据，调用方应按只读使用。 |
+| `archive.read(name, verify=False)` | 返回单个文件的完整字节，支持旁挂文件；不读取符号链接。 |
+| `archive.extract(destination, verify=False)` | 解包文件、空目录和符号链接。 |
+| `pack(source, destination, *, unpack_extensions=..., filter=None)` | 将目录打包为归档。 |
 
-在 Windows 上创建符号链接可能需要开启“开发人员模式”或以提升权限运行。目标平台自身的文件名限制同样适用。
+### 打包选项
 
-### 创建归档
-
-默认情况下，原生 `.node` 模组会被放入 `app.asar.unpacked`，与 Electron 常见布局一致：
+默认将 `.node` 文件放入同级 `app.asar.unpacked` 目录。
+传入空集合可将所有普通文件写入归档：
 
 ```python
-from pyasar import pack
-
-pack("application-directory", "app.asar")
+pack("app", "app.asar", unpack_extensions=set())
 ```
 
-传入空集合可将所有普通文件保留在 ASAR 内：
-
-```python
-pack("application-directory", "app.asar", unpack_extensions=set())
-```
-
-也可以指定更多需要放入旁挂目录的扩展名：
-
-```python
-pack(
-    "application-directory",
-    "app.asar",
-    unpack_extensions={".node", ".dll"},
-)
-```
-
-源文件扩展名匹配不区分大小写；集合中的扩展名应使用小写。
-
-打包前会删除已有的 `app.asar.unpacked` 内容，避免已经删除的原生文件残留在旧旁挂目录中。
-目标 ASAR 会被直接覆盖，打包过程并非事务操作。
-
-### 打包时过滤文件
-
-过滤函数接收一个相对于源目录的 `pathlib.Path`：
+使用小写扩展名指定其他旁挂类型。过滤函数接收每个已发现文件或目录相对于源目录的 `pathlib.Path`：
 
 ```python
 from pathlib import Path
-
-from pyasar import pack
 
 
 def include(path: Path) -> bool:
     return ".git" not in path.parts and path.suffix.lower() != ".map"
 
 
-pack("app", "app.asar", filter=include)
+pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 ```
 
-文件和目录都会调用过滤函数。仅对某个目录返回 `False` 并不会停止遍历其子项；如果需要排除整个子树，
-应像上例一样检查 `path.parts`。
+对目录返回 `False` 不会停止遍历其子项；排除整个子树时，应通过 `path.parts` 排除其中每个条目。
 
-### 异常处理
+### 格式与文件系统行为
 
-```python
-from pyasar import AsarError, AsarFormatError, open_archive
+- 支持 Pickle 封装的 JSON 头部、归档内文件、旁挂文件、空目录和以归档根目录为基准的符号链接；不支持旧版 Chromium 头部变体。
+- 写入整文件及 4 MiB 分块 SHA-256 元数据。`verify=True` 在存在 `integrity.hash` 时校验整文件，不单独校验分块哈希，也不验证归档来源；没有完整性元数据的文件仍可读取。
+- 头部 Pickle 上限为 50 MiB，并检查归档内数据范围。旁挂文件的实际路径必须位于旁挂目录内；旁挂根目录不能是符号链接或 junction。
+- 解包拒绝覆盖已有文件或链接。打包和解包均非事务操作，失败后可能留下部分输出。
+- 打包直接覆盖归档并清理旧旁挂目录；清理前拒绝源目录等于或位于实际旁挂目录内部的情况。输出位于源目录中时，会从遍历中排除。
+- POSIX 平台打包时将所有者执行位记录为 `executable: true`，解包时将此类文件权限设为 `0755`。
+- Windows 解包保留符号链接，创建链接可能需要开发人员模式或提升权限；仍受目标文件系统命名规则限制。
+- `read()` 将所请求文件完整载入内存；解包逐文件调用该方法。目前没有公共流式 API。
 
-try:
-    archive = open_archive("app.asar")
-    data = archive.read("main.js", verify=True)
-except AsarFormatError as error:
-    print(f"不安全或格式错误的 ASAR：{error}")
-except AsarError as error:
-    print(f"完整性校验失败：{error}")
-except (FileNotFoundError, PermissionError, EOFError) as error:
-    print(f"文件系统或数据截断错误：{error}")
+格式错误或不安全的归档抛出 `AsarFormatError`，它继承自 `AsarError`。
+完整性校验失败抛出 `AsarError`。文件系统错误保留标准 Python 异常类型；数据截断抛出 `EOFError`。
+
+### 开发与兼容性测试
+
+```console
+python -m pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-文件系统异常会保留为标准 Python 异常：旁挂文件缺失时抛出 `FileNotFoundError`，数据截断时抛出
-`EOFError`，解包目标已存在时抛出 `FileExistsError`，向 `info()` 传入目录时抛出
-`IsADirectoryError`。
+已与 `@electron/asar 4.3.0` 进行双向互操作测试，覆盖旁挂文件、中文文件名、空目录和哈希分块边界。
+启用可选集成测试时，在本仓库之外安装该包，将 Node.js 加入 `PATH`，并将
+`PYASAR_OFFICIAL_MODULE` 设为其 `lib/asar.js` 的绝对路径；未设置时跳过该测试。
 
-### 兼容性与安全边界
-
-`pyasar` 支持现代 Electron Pickle 容器及其 JSON 文件表，包括普通文件、unpacked 文件、相对链接和
-SHA-256 完整性条目；不支持历史 Chromium ASAR 头部变体。
-
-归档条目名和链接目标会在访问或解包前进行验证；解码后的头部 Pickle 上限为 50 MiB，归档内文件区间
-必须位于 ASAR 文件范围内。这些检查能够降低意外或恶意文件系统访问风险，但不能让不受信任的可执行
-内容变得安全。
-
-完整 API 和格式说明请参阅 [docs/API.md](docs/API.md) 与 [docs/FORMAT.md](docs/FORMAT.md)。
-
-## License / 许可证
-
-MIT. See [LICENSE](LICENSE).
+详细说明见 [API 文档](docs/API.md)和[格式说明](docs/FORMAT.md)。
