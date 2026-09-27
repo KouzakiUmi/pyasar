@@ -98,6 +98,9 @@ member of a subtree using `path.parts` when needed.
   extraction restores such files with mode `0755`.
 - Special source files that are neither regular files, directories, nor links
   (FIFOs, sockets, devices) are skipped during packing with a `UserWarning`.
+- Source entry names the archive format cannot represent safely (such as the
+  Windows drive-relative name `C:`) make `pack` fail with `ValueError`, so it
+  never emits an archive that `open_archive` would refuse.
 - Windows extraction preserves symbolic links and may require Developer Mode
   or elevated privileges. Target filesystem naming rules still apply.
 - `read()` loads the entire requested file into memory; extraction uses this
@@ -197,6 +200,7 @@ pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 - 打包直接覆盖归档并清理旧旁挂目录；清理前拒绝源目录等于或位于实际旁挂目录内部的情况。输出位于源目录中时，会从遍历中排除。与旁挂目录同名的目录会被当作旧旁挂清理（即使其中是用户数据）；头部超过 4 GiB 的归档抛出 `ValueError`。
 - POSIX 平台打包时将所有者执行位记录为 `executable: true`，解包时将此类文件权限设为 `0755`。
 - 源目录中既非普通文件、目录也非链接的特殊文件（FIFO、socket、设备文件）在打包时跳过并发出 `UserWarning`。
+- 归档格式无法安全表示的源条目名（例如 Windows 驱动器相对名 `C:`）会让 `pack` 抛出 `ValueError`，保证不会写出连 `open_archive` 都会拒绝的归档。
 - Windows 解包保留符号链接，创建链接可能需要开发人员模式或提升权限；仍受目标文件系统命名规则限制。
 - `read()` 将所请求文件完整载入内存；解包逐文件调用该方法。目前没有公共流式 API。
 

@@ -290,6 +290,7 @@ def test_rejects_boolean_size(tmp_path) -> None:
         open_archive(archive)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="verbatim path prefixes are Windows-only")
 def test_resolve_link_target_maps_unc_verbatim_prefix(
     tmp_path, monkeypatch
 ) -> None:
@@ -301,7 +302,9 @@ def test_resolve_link_target_maps_unc_verbatim_prefix(
     assert str(target) == "\\\\invalid.invalid\\share\\data"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="verbatim path prefixes are Windows-only")
 def test_pack_refuses_junction_to_unc_target(tmp_path, monkeypatch) -> None:
+
     source = tmp_path / "source"
     source.mkdir()
     (source / "main.js").write_bytes(b"main")
@@ -319,6 +322,18 @@ def test_pack_refuses_junction_to_unc_target(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(os, "getcwd", lambda: str(source))
 
     with pytest.raises(ValueError, match="outside source"):
+        pack(source, tmp_path / "app.asar")
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="drive-relative names are only creatable on POSIX"
+)
+def test_pack_rejects_names_the_reader_would_refuse(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "C:").write_bytes(b"x")
+
+    with pytest.raises(ValueError, match="unsupported entry name"):
         pack(source, tmp_path / "app.asar")
 
 

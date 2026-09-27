@@ -12,11 +12,19 @@ import warnings
 from pathlib import Path
 from typing import Callable
 
+from .archive import AsarFormatError, _validate_entry_name
+
 
 DEFAULT_UNPACK_EXTENSIONS = frozenset({".node"})
 BLOCK_SIZE = 4 * 1024 * 1024
 _LINK_REPARSE_TAGS = frozenset(
-    {stat.IO_REPARSE_TAG_SYMLINK, stat.IO_REPARSE_TAG_MOUNT_POINT}
+    tag
+    for tag in (
+        # These constants only exist on Windows builds of CPython.
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", None),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None),
+    )
+    if tag is not None
 )
 
 
@@ -47,8 +55,11 @@ def _is_link_entry(path: Path) -> bool:
     if os.name == "nt":
         try:
             result = os.lstat(path)
-        except OSError:
+        except FileNotFoundError:
+            # A not-yet-existing destination is not a link.
             return False
+        # Other OSErrors fail closed: when the reparse classification cannot
+        # be determined, refuse to pack the entry as a regular file.
         if not getattr(result, "st_file_attributes", 0) & (
             stat.FILE_ATTRIBUTE_REPARSE_POINT
         ):
@@ -155,6 +166,13 @@ def pack(
             continue
         cursor = files
         parts = relative.parts
+        for part in parts:
+            try:
+                _validate_entry_name(part)
+            except AsarFormatError as error:
+                raise ValueError(
+                    f"unsupported entry name {part!r} in source: {relative}"
+                ) from error
         for part in parts[:-1]:
             child = cursor.setdefault(part, {"files": {}})
             child_files = child.get("files")

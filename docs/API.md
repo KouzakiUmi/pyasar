@@ -156,7 +156,10 @@ named like the sidecar that lives next to the destination is treated as a stale
 sidecar and removed even when it holds user data, so keep such names free.
 
 Packing raises ValueError for unsafe sources, destinations or links, including
-destinations that are symbolic links or junctions. ASAR structure length fields
+destinations that are symbolic links or junctions. Entry names the archive
+format cannot represent safely (such as the Windows drive-relative name "C:")
+raise ValueError naming the offending file, so pack never emits an archive that
+open_archive would refuse. ASAR structure length fields
 are unsigned 32-bit values; archives whose header exceeds 4 GiB raise ValueError.
 
 ## Exception hierarchy

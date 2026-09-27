@@ -24,6 +24,13 @@ class AsarFormatError(AsarError):
     """The archive header or its file table is malformed."""
 
 
+def _bounded_json_int(text: str) -> int:
+    """Cap JSON integers by digit count, independent of interpreter version."""
+    if len(text.lstrip("-")) > MAX_OFFSET_DIGITS:
+        raise AsarFormatError("header integer exceeds the supported digit limit")
+    return int(text)
+
+
 def _read_header(path: Path) -> tuple[dict[str, Any], int]:
     with path.open("rb") as stream:
         archive_size = os.fstat(stream.fileno()).st_size
@@ -47,7 +54,9 @@ def _read_header(path: Path) -> tuple[dict[str, Any], int]:
     if json_size <= 0 or json_size > payload_size - 4:
         raise AsarFormatError("invalid ASAR JSON length")
     try:
-        header = json.loads(raw[8 : 8 + json_size].decode("utf-8"))
+        header = json.loads(
+            raw[8 : 8 + json_size].decode("utf-8"), parse_int=_bounded_json_int
+        )
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise AsarFormatError("header is not valid UTF-8 JSON") from error
     if not isinstance(header, dict) or not isinstance(header.get("files"), dict):
