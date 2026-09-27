@@ -132,7 +132,12 @@ def test_refuses_absolute_symbolic_link(tmp_path, monkeypatch) -> None:
         return path == link_path or original_is_symlink(path)
 
     monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
-    monkeypatch.setattr(os, "readlink", lambda _path: absolute_target)
+    original_readlink = os.readlink
+    monkeypatch.setattr(
+        os, "readlink",
+        lambda path, *args, **kwargs: absolute_target if Path(path) == link_path
+        else original_readlink(path, *args, **kwargs),
+    )
 
     with pytest.raises(ValueError):
         pack(source, tmp_path / "bad.asar")

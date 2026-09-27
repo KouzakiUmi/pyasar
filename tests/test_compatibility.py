@@ -12,7 +12,12 @@ from pyasar import writer
 def mock_link(monkeypatch, alias, target):
     original = writer._is_link_entry
     monkeypatch.setattr(writer, "_is_link_entry", lambda p: p == alias or original(p))
-    monkeypatch.setattr(os, "readlink", lambda p: str(target))
+    original_readlink = os.readlink
+    monkeypatch.setattr(
+        os, "readlink",
+        lambda path, *args, **kwargs: str(target) if Path(path) == alias
+        else original_readlink(path, *args, **kwargs),
+    )
 
 
 def test_unpack_predicate_overrides_extensions(tmp_path):

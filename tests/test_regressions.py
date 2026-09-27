@@ -91,29 +91,52 @@ def test_pack_rejects_link_with_backslash_target(tmp_path):
         pack(source, tmp_path / "app.asar")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows filenames are decodable")
-def test_pack_rejects_non_utf8_filename(tmp_path):
+def _mock_source_entry(monkeypatch, source, relative, *, directory):
+    """Exercise ASAR names/depth without imposing them on the host filesystem."""
+    item = source / relative
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(pyasar.writer, "_iter_tree", lambda root: [item])
+    monkeypatch.setattr(pyasar.writer, "_is_link_entry", lambda path: False)
+    monkeypatch.setattr(
+        Path, "is_dir",
+        lambda path: directory if path == item else original_is_dir(path),
+    )
+    if not directory:
+        backing = source / "backing.txt"
+        backing.write_bytes(b"data")
+        original_stat, original_open = Path.stat, Path.open
+        monkeypatch.setattr(
+            Path, "stat",
+            lambda path, *args, **kw: original_stat(
+                backing if path == item else path, *args, **kw
+            ),
+        )
+        monkeypatch.setattr(
+            Path, "open",
+            lambda path, *args, **kw: original_open(
+                backing if path == item else path, *args, **kw
+            ),
+        )
+    return item
+
+
+def test_pack_rejects_non_utf8_filename(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
-    descriptor = os.open(
-        os.path.join(os.fsencode(source), b"bad-\xff.txt"),
-        os.O_CREAT | os.O_WRONLY,
-    )
-    os.close(descriptor)
+    _mock_source_entry(monkeypatch, source, Path("bad-\udcff.txt"), directory=False)
     with pytest.raises(ValueError, match="unsupported entry name"):
         pack(source, tmp_path / "app.asar")
+    assert not (tmp_path / "app.asar").exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="exceeds Windows path limits")
-def test_pack_rejects_deeply_nested_tree(tmp_path):
+def test_pack_rejects_deeply_nested_tree(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
-    current = source
-    for index in range(257):
-        current = current / f"d{index:03d}"
-    current.mkdir(parents=True)
+    relative = Path(*[f"d{i:03d}" for i in range(257)])
+    _mock_source_entry(monkeypatch, source, relative, directory=True)
     with pytest.raises(ValueError, match="depth limit"):
         pack(source, tmp_path / "app.asar")
+    assert not (tmp_path / "app.asar").exists()
 
 
 def test_pack_rejects_oversized_header(tmp_path, monkeypatch):
@@ -244,30 +267,32 @@ def test_open_archive_directory_depth_boundary(tmp_path):
         open_archive(archive)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="exceeds Windows path limits")
-def test_pack_directory_depth_boundary(tmp_path):
+@pytest.mark.parametrize("directory, components, accepted", [
+    (True, 255, True), (True, 256, False), (True, 257, False),
+    (False, 256, True), (False, 257, False),
+])
+def test_pack_directory_depth_boundary(
+    tmp_path, monkeypatch, directory, components, accepted
+):
     source = tmp_path / "source"
     source.mkdir()
-
-    def nest(levels: int) -> Path:
-        current = source
-        for index in range(levels):
-            current = current / f"d{index:03d}"
-        current.mkdir(parents=True)
-        return current
-
-    nest(256)
-    with pytest.raises(ValueError, match="depth limit"):
-        pack(source, tmp_path / "app.asar")
-    shutil.rmtree(source)
-    source.mkdir()
-    leaf = nest(255)
+    parts = [f"d{i:03d}" for i in range(components)]
+    if not directory:
+        parts[-1] = "file.txt"
+    relative = Path(*parts)
+    _mock_source_entry(monkeypatch, source, relative, directory=directory)
     archive = tmp_path / "app.asar"
-    pack(source, archive)  # directories may nest exactly 255 components
-    open_archive(archive)
-    (leaf / "f.txt").write_bytes(b"data")
-    pack(source, archive)  # a file leaf may still reach 256 components
-    open_archive(archive)
+    if not accepted:
+        with pytest.raises(ValueError, match="depth limit"):
+            pack(source, archive)
+        assert not archive.exists()
+        return
+    pack(source, archive)
+    opened = open_archive(archive)
+    if directory:
+        assert opened.names() == []
+    else:
+        assert opened.read(relative.as_posix(), verify=True) == b"data"
 
 
 def test_extract_windows_data_stream_name(tmp_path):

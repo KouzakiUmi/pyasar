@@ -155,7 +155,12 @@ def test_nested_symlink_uses_archive_root_relative_target(
         return path == link_path or original_is_symlink(path)
 
     monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
-    monkeypatch.setattr(os, "readlink", lambda _path: os.path.join("..", "target.txt"))
+    original_readlink = os.readlink
+    monkeypatch.setattr(
+        os, "readlink",
+        lambda path, *args, **kwargs: os.path.join("..", "target.txt") if Path(path) == link_path
+        else original_readlink(path, *args, **kwargs),
+    )
 
     archive = tmp_path / "app.asar"
     pack(source, archive)
@@ -193,7 +198,12 @@ def test_pack_records_linked_directory_without_expanding(
         return path == link_path or original_is_symlink(path)
 
     monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
-    monkeypatch.setattr(os, "readlink", lambda _path: "sub")
+    original_readlink = os.readlink
+    monkeypatch.setattr(
+        os, "readlink",
+        lambda path, *args, **kwargs: "sub" if Path(path) == link_path
+        else original_readlink(path, *args, **kwargs),
+    )
 
     pack(source, tmp_path / "app.asar")
     opened = open_archive(tmp_path / "app.asar")
