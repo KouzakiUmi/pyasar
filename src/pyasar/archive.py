@@ -267,7 +267,7 @@ class AsarArchive:
 def open_archive(path: str | os.PathLike[str]) -> AsarArchive:
     """Open and structurally validate an ASAR archive."""
 
-    archive_path = Path(path)
+    archive_path = Path(path).resolve()
     header, base_offset = _read_header(archive_path)
     length = archive_path.stat().st_size
     for _, node in _walk(header["files"]):

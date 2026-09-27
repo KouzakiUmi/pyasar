@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import struct
+import warnings
 from pathlib import Path
 from typing import Callable
 
@@ -197,6 +198,11 @@ def pack(
                 payloads.append(item)
                 offset += size
             cursor[parts[-1]] = node
+        else:
+            warnings.warn(
+                f"skipping unsupported special file: {relative}",
+                stacklevel=2,
+            )
     header = json.dumps(
         {"files": files}, ensure_ascii=False, separators=(",", ":")
     ).encode()

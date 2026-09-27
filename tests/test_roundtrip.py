@@ -185,6 +185,25 @@ def test_pack_records_linked_directory_without_expanding(
     assert opened.read("sub/f.txt") == b"data"
 
 
+def test_pack_warns_and_skips_special_files(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    special = source / "fifo"
+    special.write_bytes(b"data")
+    (source / "main.js").write_bytes(b"main")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: False if path == special else original_is_file(path),
+    )
+
+    with pytest.warns(UserWarning, match="special file"):
+        pack(source, tmp_path / "app.asar")
+
+    assert open_archive(tmp_path / "app.asar").names() == ["main.js"]
+
+
 def test_info_and_read_accept_path_objects(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
