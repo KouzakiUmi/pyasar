@@ -95,11 +95,17 @@ def _mock_source_entry(monkeypatch, source, relative, *, directory):
     """Exercise ASAR names/depth without imposing them on the host filesystem."""
     item = source / relative
     original_is_dir = Path.is_dir
+    original_is_file = Path.is_file
     monkeypatch.setattr(pyasar.writer, "_iter_tree", lambda root: [item])
     monkeypatch.setattr(pyasar.writer, "_is_link_entry", lambda path: False)
     monkeypatch.setattr(
         Path, "is_dir",
         lambda path: directory if path == item else original_is_dir(path),
+    )
+    # Newer pathlib uses os.path.isfile directly instead of Path.stat.
+    monkeypatch.setattr(
+        Path, "is_file",
+        lambda path: not directory if path == item else original_is_file(path),
     )
     if not directory:
         backing = source / "backing.txt"
