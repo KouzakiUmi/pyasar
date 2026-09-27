@@ -20,6 +20,13 @@ not read file payloads and it does not verify SHA-256 hashes at this point.
 The declared header length must fit within the archive and the decoded header
 Pickle is limited to 50 MiB.
 
+Malformed structures are rejected with AsarFormatError rather than leaking
+parser exceptions. Decimal offsets must be ASCII digit strings of at most 20
+digits, JSON integers must fit Python's integer conversion limits, regular
+file sizes must be non-negative integers rather than booleans, entry names may
+not contain Windows drive-letter segments such as C:, and the file table may
+nest at most 255 directory levels.
+
 It raises FileNotFoundError or PermissionError for normal filesystem failures,
 and AsarFormatError when the archive has an invalid or truncated header or file
 table. A valid header is not proof that each payload is present: a file can be
@@ -43,10 +50,11 @@ links, in JSON header insertion order. Directory nodes are not returned.
 ### info(name)
 
 Returns the raw header dictionary for one regular-file or symbolic-link entry.
-name is normalized as a POSIX relative path; backslashes are accepted as input
-separators. Absolute paths, parent traversal and an empty path raise
-AsarFormatError. A missing entry raises KeyError, and a directory raises
-IsADirectoryError.
+name may be a string or a path object; it is normalized as a POSIX relative
+path, and backslashes are accepted as input separators. Absolute paths, parent
+traversal, an empty path, NUL bytes and Windows drive-letter segments such as
+C:name raise AsarFormatError. A missing entry raises KeyError, and a directory
+raises IsADirectoryError.
 
 The returned dictionary follows the raw ASAR schema. In particular, regular
 file offsets are strings and not integers. Do not mutate it.
@@ -83,7 +91,7 @@ FileExistsError. This makes repeated extraction into the same directory fail
 unless its prior contents are removed by the caller.
 
 Every archive name is checked for traversal. ASAR symbolic-link targets are
-relative to the archive root. They are converted to filesystem-relative links
+relative to the archive root and follow the same name rules as entry names. They are converted to filesystem-relative links
 when extracted and must resolve inside the extraction directory; otherwise
 AsarFormatError is raised. Existing symlinked parent directories that escape
 the destination are also rejected. This operation is not transactional: if a
@@ -118,22 +126,38 @@ metadata for each file. Files with a lowercase suffix present in
 unpack_extensions are copied to a sidecar at destination.asar.unpacked and
 marked unpacked.
 
-Symbolic links are resolved and represented as archive-root-relative ASAR link
-nodes. Links whose targets fall outside source are refused with ValueError.
+Symbolic links and, on Windows, directory junctions are resolved and
+represented as archive-root-relative ASAR link nodes. Other Windows reparse
+points, such as cloud placeholder files, are not treated as links and are
+packed as regular files. Links whose targets fall outside source are refused
+with ValueError, including junction targets that point at UNC network shares.
+Linked directories are recorded but never expanded: linked content is not
+duplicated into the archive, and source link cycles cannot hang packing
+because link entries are never traversed.
 
 Before clearing a stale sidecar, pack rejects a source equal to or contained in
 the resolved sidecar directory with ValueError, preserving the source data.
+The stale sidecar itself is removed first: if it is a symbolic link or
+junction, only the link is removed and its target contents are preserved.
 On POSIX systems, the owner's execute bit is recorded as executable: true for
 both packed and unpacked files.
 
 filter, when supplied, is called once for every discovered relative Path,
-including directories. Returning false omits that item. It does not prune
-directory traversal: a child may still be included and will recreate its parent
-node. Filter out every member of a subtree when it must be excluded completely.
+including directories, except for the destination archive and its sidecar,
+which are excluded from discovery first. Returning false omits that item. It
+does not prune directory traversal: a child may still be included and will
+recreate its parent node. Filter out every member of a subtree when it must be
+excluded completely.
 
 The destination ASAR and its sidecar are excluded if they live below source, so
 the same destination can be reused safely. Existing sidecar contents are
-removed before packing to prevent stale unpacked files.
+removed before packing to prevent stale unpacked files. Warning: a directory
+named like the sidecar that lives next to the destination is treated as a stale
+sidecar and removed even when it holds user data, so keep such names free.
+
+Packing raises ValueError for unsafe sources, destinations or links, including
+destinations that are symbolic links or junctions. ASAR structure length fields
+are unsigned 32-bit values; archives whose header exceeds 4 GiB raise ValueError.
 
 ## Exception hierarchy
 

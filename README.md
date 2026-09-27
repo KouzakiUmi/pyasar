@@ -73,18 +73,27 @@ member of a subtree using `path.parts` when needed.
 
 - Supports Pickle-framed JSON headers, packed and unpacked files, empty
   directories, and archive-root-relative symbolic links. Legacy Chromium
-  header variants are unsupported.
+  header variants are unsupported. On Windows, packing treats junctions as
+  symbolic links, and other reparse points such as cloud placeholders as
+  regular files; linked directories are recorded as links and never expanded,
+  so source link cycles cannot hang packing. Junction targets pointing at
+  UNC network shares are refused as outside the source.
 - Writes whole-file and 4 MiB block SHA-256 metadata. `verify=True` checks
   `integrity.hash` when present; it does not independently verify block hashes
   or authenticate the archive. Files without integrity metadata remain readable.
-- Limits header Pickles to 50 MiB and checks packed payload ranges. Unpacked
-  paths must resolve inside the sidecar; the sidecar root cannot be a symbolic
-  link or junction.
+- Limits header Pickles to 50 MiB and checks packed payload ranges. Malformed
+  structures — oversized decimal offsets, oversized JSON integers, boolean
+  sizes, deeply nested file tables, NUL bytes and Windows drive-letter
+  segments in entry names and paths — raise `AsarFormatError` instead of
+  leaking parser exceptions. Unpacked paths must resolve inside the sidecar;
+  the sidecar root cannot be a symbolic link or junction.
 - Extraction refuses to overwrite existing files or links. Both packing and
   extraction are non-transactional; a failure may leave partial output.
 - Packing overwrites the archive and clears its old sidecar. It rejects a source
   equal to or inside the resolved sidecar before cleanup. Outputs inside the
-  source tree are excluded from traversal.
+  source tree are excluded from traversal. A directory named like the sidecar
+  next to the destination is removed as stale even if it holds user data, and
+  archives whose header exceeds 4 GiB raise `ValueError`.
 - On POSIX, packing records the owner's execute bit as `executable: true`;
   extraction restores such files with mode `0755`.
 - Windows extraction preserves symbolic links and may require Developer Mode
@@ -179,11 +188,11 @@ pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 
 ### 格式与文件系统行为
 
-- 支持 Pickle 封装的 JSON 头部、归档内文件、旁挂文件、空目录和以归档根目录为基准的符号链接；不支持旧版 Chromium 头部变体。
+- 支持 Pickle 封装的 JSON 头部、归档内文件、旁挂文件、空目录和以归档根目录为基准的符号链接；不支持旧版 Chromium 头部变体。Windows 打包时将 junction 视为符号链接，将云占位等其他重分析点视作普通文件；被链接的目录只记录为链接、不展开，源目录中的链接环不会导致打包挂起；指向 UNC 网络共享的 junction 目标会因位于源目录之外而被拒绝。
 - 写入整文件及 4 MiB 分块 SHA-256 元数据。`verify=True` 在存在 `integrity.hash` 时校验整文件，不单独校验分块哈希，也不验证归档来源；没有完整性元数据的文件仍可读取。
-- 头部 Pickle 上限为 50 MiB，并检查归档内数据范围。旁挂文件的实际路径必须位于旁挂目录内；旁挂根目录不能是符号链接或 junction。
+- 头部 Pickle 上限为 50 MiB，并检查归档内数据范围。畸形结构——超长十进制偏移、超大 JSON 整数、布尔值 size、过深嵌套的文件表、条目名与路径中的 NUL 字符和 Windows 盘符段——一律抛出 `AsarFormatError`，不会泄漏解析器内部异常。旁挂文件的实际路径必须位于旁挂目录内；旁挂根目录不能是符号链接或 junction。
 - 解包拒绝覆盖已有文件或链接。打包和解包均非事务操作，失败后可能留下部分输出。
-- 打包直接覆盖归档并清理旧旁挂目录；清理前拒绝源目录等于或位于实际旁挂目录内部的情况。输出位于源目录中时，会从遍历中排除。
+- 打包直接覆盖归档并清理旧旁挂目录；清理前拒绝源目录等于或位于实际旁挂目录内部的情况。输出位于源目录中时，会从遍历中排除。与旁挂目录同名的目录会被当作旧旁挂清理（即使其中是用户数据）；头部超过 4 GiB 的归档抛出 `ValueError`。
 - POSIX 平台打包时将所有者执行位记录为 `executable: true`，解包时将此类文件权限设为 `0755`。
 - Windows 解包保留符号链接，创建链接可能需要开发人员模式或提升权限；仍受目标文件系统命名规则限制。
 - `read()` 将所请求文件完整载入内存；解包逐文件调用该方法。目前没有公共流式 API。

@@ -159,3 +159,40 @@ def test_nested_symlink_uses_archive_root_relative_target(
     assert created_targets == [
         (destination / "nested" / "alias.txt", os.path.join("..", "target.txt"), False)
     ]
+
+
+def test_pack_records_linked_directory_without_expanding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    (source / "sub").mkdir(parents=True)
+    (source / "sub" / "f.txt").write_bytes(b"data")
+    (source / "loop").mkdir()
+    (source / "loop" / "f.txt").write_bytes(b"inner")
+    link_path = source / "loop"
+    original_is_symlink = Path.is_symlink
+
+    def fake_is_symlink(path: Path) -> bool:
+        return path == link_path or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(os, "readlink", lambda _path: "sub")
+
+    pack(source, tmp_path / "app.asar")
+    opened = open_archive(tmp_path / "app.asar")
+    assert opened.names() == ["loop", "sub/f.txt"]
+    assert opened.info("loop") == {"link": "sub"}
+    assert opened.read("sub/f.txt") == b"data"
+
+
+def test_info_and_read_accept_path_objects(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "main.js").write_bytes(b"content")
+    archive = tmp_path / "app.asar"
+    pack(source, archive)
+    opened = open_archive(archive)
+    assert opened.info(Path("main.js"))["size"] == 7
+    assert opened.read(Path("main.js")) == b"content"
+    with pytest.raises(KeyError):
+        opened.info(Path("missing.txt"))

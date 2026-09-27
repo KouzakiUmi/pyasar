@@ -12,6 +12,8 @@ from typing import Any, Iterator
 
 
 MAX_HEADER_SIZE = 50 * 1024 * 1024
+MAX_TREE_DEPTH = 255
+MAX_OFFSET_DIGITS = 20
 
 
 class AsarError(Exception):
@@ -46,28 +48,55 @@ def _read_header(path: Path) -> tuple[dict[str, Any], int]:
         raise AsarFormatError("invalid ASAR JSON length")
     try:
         header = json.loads(raw[8 : 8 + json_size].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise AsarFormatError("header is not UTF-8 JSON") from error
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise AsarFormatError("header is not valid UTF-8 JSON") from error
     if not isinstance(header, dict) or not isinstance(header.get("files"), dict):
         raise AsarFormatError("header must contain a files object")
     return header, 8 + second_size
 
 
-def _parts(name: str) -> tuple[str, ...]:
+def _is_drive_segment(part: str) -> bool:
+    """Reject Windows drive-relative segments such as 'C:' or 'C:name'."""
+    return (
+        len(part) >= 2 and part[1] == ":" and part[0].isascii() and part[0].isalpha()
+    )
+
+
+def _parts(name: str | os.PathLike[str]) -> tuple[str, ...]:
+    if not isinstance(name, str):
+        name = os.fspath(name)
+        if isinstance(name, bytes):
+            raise TypeError("archive entry paths must be text, not bytes")
     path = PurePosixPath(name.replace("\\", "/"))
-    if path.is_absolute() or ".." in path.parts or not path.parts or str(path) == ".":
+    if (
+        "\x00" in name
+        or path.is_absolute()
+        or ".." in path.parts
+        or not path.parts
+        or str(path) == "."
+        or any(_is_drive_segment(part) for part in path.parts)
+    ):
         raise AsarFormatError(f"unsafe archive path: {name!r}")
     return path.parts
 
 
 def _validate_entry_name(name: str) -> None:
-    if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+    if (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or "\x00" in name
+        or _is_drive_segment(name)
+    ):
         raise AsarFormatError(f"invalid ASAR entry name: {name!r}")
 
 
 def _walk(
-    files: dict[str, Any], prefix: str = ""
+    files: dict[str, Any], prefix: str = "", depth: int = 0
 ) -> Iterator[tuple[str, dict[str, Any]]]:
+    if depth > MAX_TREE_DEPTH:
+        raise AsarFormatError("ASAR file table is nested too deeply")
     for name, node in files.items():
         if not isinstance(name, str) or not isinstance(node, dict):
             raise AsarFormatError("file table contains an invalid entry")
@@ -77,7 +106,7 @@ def _walk(
         if children is not None:
             if not isinstance(children, dict):
                 raise AsarFormatError(f"{full_name!r}.files is not an object")
-            yield from _walk(children, full_name)
+            yield from _walk(children, full_name, depth + 1)
         else:
             yield full_name, node
 
@@ -93,14 +122,19 @@ def _walk_directories(files: dict[str, Any], prefix: str = "") -> Iterator[str]:
 
 def _file_offset(node: dict[str, Any]) -> int:
     value = node.get("offset")
-    if not isinstance(value, str) or not value.isdigit():
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or not value.isdigit()
+        or len(value) > MAX_OFFSET_DIGITS
+    ):
         raise AsarFormatError("regular file offset must be a decimal string")
     return int(value)
 
 
 def _file_size(node: dict[str, Any]) -> int:
     value = node.get("size")
-    if not isinstance(value, int) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise AsarFormatError("regular file size must be a non-negative integer")
     return value
 

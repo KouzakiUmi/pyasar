@@ -14,16 +14,75 @@ from typing import Callable
 
 DEFAULT_UNPACK_EXTENSIONS = frozenset({".node"})
 BLOCK_SIZE = 4 * 1024 * 1024
+_LINK_REPARSE_TAGS = frozenset(
+    {stat.IO_REPARSE_TAG_SYMLINK, stat.IO_REPARSE_TAG_MOUNT_POINT}
+)
+
+
+def _u32(value: int) -> bytes:
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ValueError(f"ASAR structure field exceeds the 4 GiB limit: {value}")
+    return struct.pack("<I", value)
 
 
 def _pickle(value: int) -> bytes:
-    return struct.pack("<I", 4) + struct.pack("<I", value)
+    return _u32(4) + _u32(value)
 
 
 def _string_pickle(value: bytes) -> bytes:
     padding = (-len(value)) % 4
-    payload = struct.pack("<I", len(value)) + value + b"\x00" * padding
-    return struct.pack("<I", len(payload)) + payload
+    payload = _u32(len(value)) + value + b"\x00" * padding
+    return _u32(len(payload)) + payload
+
+
+def _is_link_entry(path: Path) -> bool:
+    """True for symbolic links and, on Windows, directory junctions.
+
+    Other Windows reparse points, such as cloud placeholder files, are not
+    links and are packed as regular files.
+    """
+    if path.is_symlink():
+        return True
+    if os.name == "nt":
+        try:
+            result = os.lstat(path)
+        except OSError:
+            return False
+        if not getattr(result, "st_file_attributes", 0) & (
+            stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            return False
+        return getattr(result, "st_reparse_tag", 0) in _LINK_REPARSE_TAGS
+    return False
+
+
+def _iter_tree(root: Path) -> list[Path]:
+    """Collect every entry below root in lexicographic order.
+
+    Link entries are listed but never traversed, so source link cycles cannot
+    hang packing and linked content is never expanded into duplicate files.
+    """
+    entries: list[Path] = []
+    pending = [root]
+    while pending:
+        for child in sorted(pending.pop().iterdir()):
+            entries.append(child)
+            if child.is_dir() and not _is_link_entry(child):
+                pending.append(child)
+    return sorted(entries)
+
+
+def _resolve_link_target(item: Path, raw_target: str) -> Path:
+    """Resolve a link target, normalizing Windows verbatim path prefixes."""
+    target = item.parent / raw_target
+    text = str(target)
+    if os.name == "nt" and text.startswith("\\\\?\\"):
+        if text.startswith("\\\\?\\UNC\\"):
+            # \\?\UNC\server\share is the verbatim form of \\server\share.
+            target = Path("\\\\" + text[8:])
+        else:
+            target = Path(text[4:])
+    return target.resolve()
 
 
 def _integrity(path: Path) -> dict[str, object]:
@@ -52,7 +111,7 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 
 def _clean_unpack_root(unpack_root: Path) -> None:
-    if unpack_root.is_symlink() or unpack_root.is_file():
+    if _is_link_entry(unpack_root) or unpack_root.is_file():
         unpack_root.unlink()
     elif unpack_root.is_dir():
         shutil.rmtree(unpack_root)
@@ -74,7 +133,7 @@ def pack(
     output_path = Path(destination)
     if not root.is_dir():
         raise NotADirectoryError(root)
-    if output_path.is_symlink():
+    if _is_link_entry(output_path):
         raise ValueError(f"destination must not be a symbolic link: {output_path}")
     output = output_path.resolve()
     if output.is_dir():
@@ -86,7 +145,7 @@ def pack(
     files: dict[str, object] = {}
     payloads: list[Path] = []
     offset = 0
-    for item in sorted(root.rglob("*")):
+    for item in _iter_tree(root):
         item_absolute = item.absolute()
         if item_absolute == output or _is_within(item_absolute, unpack_root):
             continue
@@ -97,9 +156,14 @@ def pack(
         parts = relative.parts
         for part in parts[:-1]:
             child = cursor.setdefault(part, {"files": {}})
-            cursor = child["files"]  # type: ignore[index]
-        if item.is_symlink():
-            target = (item.parent / os.readlink(item)).resolve()
+            child_files = child.get("files")
+            if not isinstance(child_files, dict):
+                raise ValueError(
+                    f"source path conflicts with a file or link: {relative}"
+                )
+            cursor = child_files
+        if _is_link_entry(item):
+            target = _resolve_link_target(item, os.readlink(item))
             try:
                 link = target.relative_to(root)
             except ValueError:
@@ -112,15 +176,16 @@ def pack(
         elif item.is_dir():
             cursor.setdefault(parts[-1], {"files": {}})
         elif item.is_file():
+            item_stat = item.stat()
             size, unpacked = (
-                item.stat().st_size,
+                item_stat.st_size,
                 item.suffix.lower() in unpack_extensions,
             )
             node = {
                 "size": size,
                 "integrity": _integrity(item),
             }
-            if os.name != "nt" and item.stat().st_mode & stat.S_IXUSR:
+            if os.name != "nt" and item_stat.st_mode & stat.S_IXUSR:
                 node["executable"] = True
             if unpacked:
                 node["unpacked"] = True
