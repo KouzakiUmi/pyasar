@@ -1,5 +1,7 @@
 import hashlib
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -28,8 +30,23 @@ def test_executable_permissions_roundtrip(tmp_path, suffix):
     assert not (tmp_path / "out" / ordinary.name).stat().st_mode & 0o111
 
 
-@pytest.mark.skipif(os.name == "nt", reason="requires symlink privileges on Windows")
+def _can_create_directory_link() -> bool:
+    """Whether this process may create directory symlinks at all."""
+    if os.name != "nt":
+        return True
+    probe_dir = tempfile.mkdtemp(prefix="pyasar-symlink-probe-")
+    try:
+        Path(probe_dir, "probe").symlink_to(probe_dir, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
 def test_real_directory_link_roundtrip(tmp_path):
+    if not _can_create_directory_link():
+        pytest.skip("requires symlink privileges on Windows")
     source = tmp_path / "source"
     (source / "folder").mkdir(parents=True)
     (source / "folder" / "data").write_bytes(b"data")

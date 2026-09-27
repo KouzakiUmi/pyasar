@@ -23,10 +23,20 @@ of the archive.
 ## Header nodes
 
 The root object contains a files object. A directory node has its own files
-object. A regular file node has at least size and offset fields. An unpacked
-regular file additionally has unpacked set to true; its contents live in the
+object. A packed regular file node has at least size and offset fields. An unpacked
+regular file has size and unpacked set to true, with no offset required; its contents live in the
 sibling .unpacked tree instead of the ASAR payload area. A link node has a link
 string and has no file payload.
+
+An unpacked link also has unpacked set to true and a relative filesystem link
+in the sidecar. pyasar requires its target to be present there; selected
+directory links require all descendant leaves to be unpacked. The unpack
+callback selects files and links by relative path, independently of suffixes.
+
+The link string is archive-root-relative. info/read can resolve file links,
+directory links and chains with follow_links=True; the default retains raw
+link metadata and refuses to read links. Resolution detects cycles and limits
+link expansion. Unpacked reads use the resolved target's sidecar path.
 
 pyasar writes integrity metadata with algorithm SHA256, a whole-file hash, a
 4 MiB blockSize and one hash per block. Empty files have one hash for the empty
@@ -40,6 +50,8 @@ The layout follows the format used by Electron ASAR tooling. Compatibility is
 tested with pyasar round trips and bidirectional integration against official
 @electron/asar 4.3.0. The integration test covers packed and unpacked files,
 Unicode names, empty directories, and SHA-256 blocks at the 4 MiB boundary.
+POSIX compatibility tests also check that official extractFile and extractAll
+can consume pyasar's unpacked symbolic links.
 To run it, install @electron/asar outside this project, set
 PYASAR_OFFICIAL_MODULE to its absolute lib/asar.js path, and run pytest with
 Node.js available on PATH. Without that variable the integration test is skipped.

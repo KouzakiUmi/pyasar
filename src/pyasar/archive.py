@@ -99,6 +99,32 @@ def _validate_entry_name(name: str) -> None:
         or _is_drive_segment(name)
     ):
         raise AsarFormatError(f"invalid ASAR entry name: {name!r}")
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError as error:
+        # POSIX sources can carry undecodable bytes as lone surrogates, which
+        # have no ASAR header representation.
+        raise AsarFormatError(
+            f"ASAR entry name is not UTF-8 encodable: {name!r}"
+        ) from error
+
+
+def _windows_filesystem_parts(name: str) -> tuple[str, ...]:
+    """Components of name for mapping onto a Windows filesystem.
+
+    A component such as 'file.txt:stream' is an ordinary name on POSIX but
+    addresses a named data stream of 'file.txt' on Windows; mapping it onto
+    the filesystem there would read or modify a different file than the
+    archive entry describes. POSIX keeps the plain name for interop.
+    """
+    parts = _parts(name)
+    if os.name == "nt":
+        for part in parts:
+            if ":" in part:
+                raise AsarFormatError(
+                    f"archive name maps to a Windows data stream: {name!r}"
+                )
+    return parts
 
 
 def _walk(
@@ -111,10 +137,17 @@ def _walk(
             raise AsarFormatError("file table contains an invalid entry")
         _validate_entry_name(name)
         full_name = f"{prefix}/{name}" if prefix else name
-        children = node.get("files")
-        if children is not None:
+        if "files" in node:
+            children = node["files"]
+            # An explicit files key, including null, must hold an object.
             if not isinstance(children, dict):
                 raise AsarFormatError(f"{full_name!r}.files is not an object")
+            if "link" in node:
+                # Directory and link fields are mutually exclusive; a node
+                # carrying both would classify differently across readers.
+                raise AsarFormatError(
+                    f"{full_name!r} mixes directory and link fields"
+                )
             yield from _walk(children, full_name, depth + 1)
         else:
             yield full_name, node
@@ -124,7 +157,7 @@ def _walk_directories(files: dict[str, Any], prefix: str = "") -> Iterator[str]:
     for name, node in files.items():
         full_name = f"{prefix}/{name}" if prefix else name
         children = node.get("files")
-        if children is not None:
+        if isinstance(children, dict):
             yield full_name
             yield from _walk_directories(children, full_name)
 
@@ -159,28 +192,38 @@ class AsarArchive:
     def names(self) -> list[str]:
         return [name for name, _ in _walk(self.header["files"])]
 
-    def info(self, name: str) -> dict[str, Any]:
+    def _resolve(self, name: str, follow_links: bool) -> tuple[str, dict[str, Any]]:
         parts = _parts(name)
-        current: Any = self.header["files"]
-        node: Any = None
-        for index, part in enumerate(parts):
-            if not isinstance(current, dict) or part not in current:
-                raise KeyError(name)
-            node = current[part]
-            if index < len(parts) - 1:
-                if not isinstance(node, dict) or not isinstance(
-                    node.get("files"), dict
-                ):
+        seen: set[tuple[str, ...]] = set()
+        for _ in range(MAX_TREE_DEPTH + 1):
+            if parts in seen:
+                raise AsarFormatError(f"circular symbolic link: {name}")
+            seen.add(parts)
+            node = self.header
+            for index, part in enumerate(parts):
+                children = node.get("files", {})
+                if part not in children:
                     raise KeyError(name)
-                current = node["files"]
-        if not isinstance(node, dict):
-            raise AsarFormatError(f"invalid ASAR entry: {name!r}")
+                node = children[part]
+                if follow_links and "link" in node:
+                    parts = _parts(node["link"]) + parts[index + 1 :]
+                    break
+            else:
+                return "/".join(parts), node
+        raise AsarFormatError(f"too many symbolic links: {name}")
+
+    def info(self, name: str, *, follow_links: bool = False) -> dict[str, Any]:
+        _, node = self._resolve(name, follow_links)
         if "files" in node:
             raise IsADirectoryError(name)
         return node
 
-    def read(self, name: str, *, verify: bool = False) -> bytes:
-        node = self.info(name)
+    def read(
+        self, name: str, *, verify: bool = False, follow_links: bool = False
+    ) -> bytes:
+        resolved_name, node = self._resolve(name, follow_links)
+        if "files" in node:
+            raise IsADirectoryError(name)
         if "link" in node:
             raise OSError("cannot read a symbolic link as a regular file")
         size = _file_size(node)
@@ -188,7 +231,14 @@ class AsarArchive:
             sidecar = self.path.parent.resolve() / (self.path.name + ".unpacked")
             if sidecar.resolve() != sidecar:
                 raise AsarFormatError("unpacked root must not be a filesystem link")
-            source = sidecar.joinpath(*_parts(name)).resolve()
+            if sidecar.exists() and not sidecar.is_dir():
+                # A regular file or special file in place of the sidecar
+                # directory reports differently per platform (ENOTDIR on
+                # POSIX, path-not-found on Windows); normalize the error.
+                raise NotADirectoryError(
+                    f"unpacked ASAR root is not a directory: {sidecar}"
+                )
+            source = sidecar.joinpath(*_windows_filesystem_parts(resolved_name)).resolve()
             if sidecar not in source.parents:
                 raise AsarFormatError(f"unpacked file escapes sidecar: {name}")
             try:
@@ -205,30 +255,25 @@ class AsarArchive:
             raise EOFError(f"truncated ASAR payload: {name}")
         if verify:
             integrity = node.get("integrity", {})
-            expected = integrity.get("hash") if isinstance(integrity, dict) else None
-            if expected and hashlib.sha256(data).hexdigest() != expected:
-                raise AsarError(f"integrity check failed: {name}")
+            if not isinstance(integrity, dict):
+                raise AsarFormatError(f"invalid integrity metadata: {name}")
+            if "hash" in integrity:
+                # A present hash key must hold a string: an explicit null is
+                # malformed metadata, not the absence of metadata.
+                expected = integrity["hash"]
+                if not isinstance(expected, str):
+                    raise AsarFormatError(f"invalid integrity hash: {name}")
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise AsarError(f"integrity check failed: {name}")
         return data
 
     def _link_is_directory(self, name: str) -> bool:
         """Resolve header links, including links in intermediate components."""
-        parts = _parts(name)
-        seen: set[tuple[str, ...]] = set()
-        for _ in range(40):
-            if parts in seen:
-                raise AsarFormatError(f"circular symbolic link: {name}")
-            seen.add(parts)
-            node = self.header
-            for index, part in enumerate(parts):
-                node = node.get("files", {}).get(part)
-                if node is None:
-                    return False  # Preserve dangling links as file links.
-                if "link" in node:
-                    parts = _parts(node["link"]) + parts[index + 1 :]
-                    break
-            else:
-                return "files" in node
-        raise AsarFormatError(f"too many symbolic links: {name}")
+        try:
+            _, node = self._resolve(name, True)
+        except KeyError:
+            return False  # Preserve dangling links as file links.
+        return "files" in node
 
     def extract(
         self, destination: str | os.PathLike[str], *, verify: bool = False
@@ -238,7 +283,7 @@ class AsarArchive:
         root = target.resolve()
         entries = list(_walk(self.header["files"]))
         for name in _walk_directories(self.header["files"]):
-            output = target.joinpath(*_parts(name))
+            output = target.joinpath(*_windows_filesystem_parts(name))
             if root not in (output.parent.resolve(), *output.parent.resolve().parents):
                 raise AsarFormatError(f"unsafe extraction target: {name}")
             if output.is_symlink() or (output.exists() and not output.is_dir()):
@@ -247,7 +292,7 @@ class AsarArchive:
                 )
             output.mkdir(parents=True, exist_ok=True)
         for name, node in entries:
-            output = target.joinpath(*_parts(name))
+            output = target.joinpath(*_windows_filesystem_parts(name))
             if root not in (output.parent.resolve(), *output.parent.resolve().parents):
                 raise AsarFormatError(f"unsafe extraction target: {name}")
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -259,7 +304,7 @@ class AsarArchive:
                 link = node["link"]
                 if not isinstance(link, str):
                     raise AsarFormatError(f"unsafe symbolic link: {name}")
-                link_target = target.joinpath(*_parts(link))
+                link_target = target.joinpath(*_windows_filesystem_parts(link))
                 resolved_link = link_target.resolve()
                 if root not in (resolved_link, *resolved_link.parents):
                     raise AsarFormatError(f"symbolic link escapes destination: {name}")
@@ -283,7 +328,10 @@ def open_archive(path: str | os.PathLike[str]) -> AsarArchive:
         if "link" in node:
             if not isinstance(node["link"], str):
                 raise AsarFormatError("symbolic link target must be a string")
-            _parts(node["link"])
+            for part in _parts(node["link"]):
+                # Link targets must survive the same UTF-8 round trip as
+                # entry names, or extraction fails with a codec error.
+                _validate_entry_name(part)
             continue
         if node.get("unpacked") is True:
             _file_size(node)

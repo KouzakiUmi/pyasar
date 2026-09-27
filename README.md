@@ -38,10 +38,10 @@ extract("app.asar", "output", verify=True)
 | --- | --- |
 | `open_archive(path)` | Parse and structurally validate the header without loading file payloads. |
 | `archive.names()` | List files and symbolic links as POSIX paths; exclude directories. |
-| `archive.info(name)` | Return raw entry metadata; treat it as read-only. |
-| `archive.read(name, verify=False)` | Read one complete file as bytes, including unpacked files; reject symbolic links. |
+| `archive.info(name, follow_links=False)` | Return raw entry metadata; treat it as read-only. |
+| `archive.read(name, verify=False, follow_links=False)` | Read one complete file as bytes, including unpacked files; optionally follow symbolic links. |
 | `archive.extract(destination, verify=False)` | Extract files, empty directories, and symbolic links. |
-| `pack(source, destination, *, unpack_extensions=..., filter=None)` | Create an archive from a directory. |
+| `pack(source, destination, *, unpack_extensions=..., filter=None, unpack=None)` | Create an archive from a directory. |
 
 ### Packing options
 
@@ -68,6 +68,20 @@ pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 
 Returning `False` for a directory does not prune its descendants; exclude each
 member of a subtree using `path.parts` when needed.
+
+For precise sidecar selection, `unpack` replaces the extension rule for each
+included file or link:
+
+```python
+pack("app", "app.asar", unpack=lambda p: p.parts[0] == "native")
+archive = open_archive("app.asar")
+content = archive.read("alias/main.js", follow_links=True, verify=True)
+```
+
+`info()` also accepts `follow_links=True`. Both methods keep their existing
+defaults. Selected links are recreated in the sidecar; their targets must also
+be included and unpacked. Links to unpacked files are mirrored automatically.
+Creating sidecar links on Windows requires symlink privileges.
 
 ### Format and filesystem behavior
 
@@ -166,10 +180,10 @@ extract("app.asar", "output", verify=True)
 | --- | --- |
 | `open_archive(path)` | 解析并验证头部结构，不加载文件内容。 |
 | `archive.names()` | 以 POSIX 路径列出文件和符号链接，不包含目录。 |
-| `archive.info(name)` | 返回条目的原始元数据，调用方应按只读使用。 |
-| `archive.read(name, verify=False)` | 返回单个文件的完整字节，支持旁挂文件；不读取符号链接。 |
+| `archive.info(name, follow_links=False)` | 返回条目的原始元数据，调用方应按只读使用。 |
+| `archive.read(name, verify=False, follow_links=False)` | 返回单个文件的完整字节，支持旁挂文件；可选择跟随符号链接。 |
 | `archive.extract(destination, verify=False)` | 解包文件、空目录和符号链接。 |
-| `pack(source, destination, *, unpack_extensions=..., filter=None)` | 将目录打包为归档。 |
+| `pack(source, destination, *, unpack_extensions=..., filter=None, unpack=None)` | 将目录打包为归档。 |
 
 ### 打包选项
 
@@ -194,6 +208,16 @@ pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 ```
 
 对目录返回 `False` 不会停止遍历其子项；排除整个子树时，应通过 `path.parts` 排除其中每个条目。
+
+`unpack` 回调接收每个已包含文件或链接的相对路径，替代扩展名规则，可精确选择旁挂内容：
+
+```python
+pack("app", "app.asar", unpack=lambda p: p.parts[0] == "native")
+archive = open_archive("app.asar")
+content = archive.read("alias/main.js", follow_links=True, verify=True)
+```
+
+`info()` 也支持 `follow_links=True`，两者均保留原有默认行为。选中的链接会在旁挂目录中重建，其目标也必须包含在包中并旁挂；指向旁挂文件的链接会自动重建。Windows 创建旁挂链接需要符号链接权限。
 
 ### 格式与文件系统行为
 
