@@ -366,3 +366,63 @@ def test_pack_treats_cloud_reparse_points_as_regular_files(
     pack(source, tmp_path / "app.asar")
     opened = open_archive(tmp_path / "app.asar")
     assert opened.read("cloudfile.bin") == b"cloud"
+
+
+def test_pack_rejects_single_file_over_volume_limit(tmp_path, monkeypatch) -> None:
+    from pyasar import writer
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "big.bin").write_bytes(b"x" * 100)
+    monkeypatch.setattr(
+        writer, "_volume_allows_large_files", lambda destination: False
+    )
+    monkeypatch.setattr(writer, "_FAT_MAX_FILE_SIZE", 10)
+
+    with pytest.raises(ValueError, match="100-byte file"):
+        pack(source, tmp_path / "app.asar")
+    assert not (tmp_path / "app.asar").exists()
+
+
+def test_pack_rejects_archive_over_volume_limit(tmp_path, monkeypatch) -> None:
+    from pyasar import writer
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "small.bin").write_bytes(b"12345678")
+    monkeypatch.setattr(
+        writer, "_volume_allows_large_files", lambda destination: False
+    )
+    monkeypatch.setattr(writer, "_FAT_MAX_FILE_SIZE", 10)
+
+    with pytest.raises(ValueError, match="-byte archive"):
+        pack(source, tmp_path / "app.asar")
+    assert not (tmp_path / "app.asar").exists()
+
+
+def test_volume_probe_reports_a_boolean(tmp_path) -> None:
+    from pyasar.writer import _volume_allows_large_files
+
+    assert isinstance(_volume_allows_large_files(tmp_path), bool)
+
+
+def test_mount_table_matching_is_component_aware() -> None:
+    from pyasar.writer import _mount_table_allows_large_files
+
+    table = [
+        "/dev/sda1 / ext4 rw 0 0",
+        "/dev/sdb1 /mnt/usb vfat rw 0 0",
+    ]
+    assert _mount_table_allows_large_files("/mnt/usb/app.asar", table) is False
+    # A sibling directory sharing the string prefix must not match the mount.
+    assert _mount_table_allows_large_files("/mnt/usb-backup/app.asar", table) is True
+    assert _mount_table_allows_large_files("/srv/app.asar", table) is True
+
+
+def test_mount_table_unescapes_octal_mount_points() -> None:
+    from pyasar.writer import _mount_table_allows_large_files
+
+    table = ["/dev/sdb1 /mnt/my\\040usb vfat rw 0 0"]
+    assert _mount_table_allows_large_files("/mnt/my usb/app.asar", table) is False
+    # The escape is decoded, so the raw escaped spelling no longer matches.
+    assert _mount_table_allows_large_files("/mnt/my\\040usb/app.asar", table) is True

@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import struct
 import warnings
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from .archive import AsarFormatError, _validate_entry_name
 
@@ -26,6 +27,8 @@ _LINK_REPARSE_TAGS = frozenset(
     )
     if tag is not None
 )
+# FAT12/16/32 volumes cannot store any single file of 4 GiB or more.
+_FAT_MAX_FILE_SIZE = 4 * 1024**3 - 1
 
 
 def _u32(value: int) -> bytes:
@@ -97,6 +100,67 @@ def _resolve_link_target(item: Path, raw_target: str) -> Path:
     return target.resolve()
 
 
+_MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
+_FAT_FILESYSTEM_TYPES = frozenset({"vfat", "msdos", "umsdos"})
+
+
+def _unescape_mount(text: str) -> str:
+    """Decode the octal escapes /proc/mounts uses for special characters."""
+    return _MOUNT_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), text)
+
+
+def _mount_table_allows_large_files(resolved: str, lines: Iterable[str]) -> bool:
+    """Whether the longest mount covering resolved is not FAT-family.
+
+    Matching is path-component aware, so a mount at /mnt/usb never claims a
+    destination under /mnt/usb-backup.
+    """
+    best_type, best_len = "", -1
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mount = _unescape_mount(parts[1])
+        if resolved == mount or resolved.startswith(mount.rstrip("/") + "/"):
+            if len(mount) > best_len:
+                best_len, best_type = len(mount), parts[2]
+    return best_type not in _FAT_FILESYSTEM_TYPES
+
+
+def _volume_allows_large_files(destination: Path) -> bool:
+    """Whether the volume hosting destination can hold files over 4 GiB-1.
+
+    Only FAT-family filesystems are known to reject such files. Detection is
+    best effort: on any failure the answer is True, leaving the operating
+    system to report its own write error instead.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            name = ctypes.create_unicode_buffer(261)
+            ok = ctypes.windll.kernel32.GetVolumeInformationW(
+                destination.anchor, None, 0, None, None, None, name, 261
+            )
+            return ok == 0 or name.value.upper() not in {
+                "FAT",
+                "FAT12",
+                "FAT16",
+                "FAT32",
+            }
+        except Exception:
+            return True
+    try:
+        resolved = str(destination.resolve())
+    except OSError:
+        return True
+    try:
+        with open("/proc/mounts", encoding="utf-8", errors="replace") as stream:
+            return _mount_table_allows_large_files(resolved, stream)
+    except OSError:
+        return True
+
+
 def _integrity(path: Path) -> dict[str, object]:
     digest = hashlib.sha256()
     blocks: list[str] = []
@@ -150,6 +214,7 @@ def pack(
     output = output_path.resolve()
     if output.is_dir():
         raise IsADirectoryError(output)
+    large_files_supported = _volume_allows_large_files(output)
     unpack_root = output.with_name(output.name + ".unpacked")
     if _is_within(root, unpack_root.resolve()):
         raise ValueError("unpacked destination must not contain the source directory")
@@ -200,6 +265,10 @@ def pack(
                 item_stat.st_size,
                 item.suffix.lower() in unpack_extensions,
             )
+            if not large_files_supported and size > _FAT_MAX_FILE_SIZE:
+                raise ValueError(
+                    f"destination volume cannot hold a {size}-byte file: {relative}"
+                )
             node = {
                 "size": size,
                 "integrity": _integrity(item),
@@ -224,8 +293,14 @@ def pack(
     header = json.dumps(
         {"files": files}, ensure_ascii=False, separators=(",", ":")
     ).encode()
-    output.parent.mkdir(parents=True, exist_ok=True)
     header_pickle = _string_pickle(header)
+    if not large_files_supported:
+        total = 8 + len(header_pickle) + offset
+        if total > _FAT_MAX_FILE_SIZE:
+            raise ValueError(
+                f"destination volume cannot hold the {total}-byte archive: {output}"
+            )
+    output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("wb") as stream:
         stream.write(_pickle(len(header_pickle)))
         stream.write(header_pickle)

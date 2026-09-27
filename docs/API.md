@@ -161,6 +161,12 @@ format cannot represent safely (such as the Windows drive-relative name "C:")
 raise ValueError naming the offending file, so pack never emits an archive that
 open_archive would refuse. ASAR structure length fields
 are unsigned 32-bit values; archives whose header exceeds 4 GiB raise ValueError.
+Before writing, pack also checks whether the volume hosting the destination
+can store files larger than 4 GiB. FAT-family volumes cannot: oversized single
+files and oversized whole archives raise ValueError there instead of a
+mid-write failure. This detection is best effort; filesystems hidden behind a
+bridge (such as a Windows drive reached through WSL's /mnt) cannot be
+recognized.
 
 ## Exception hierarchy
 

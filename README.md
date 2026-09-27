@@ -93,7 +93,11 @@ member of a subtree using `path.parts` when needed.
   equal to or inside the resolved sidecar before cleanup. Outputs inside the
   source tree are excluded from traversal. A directory named like the sidecar
   next to the destination is removed as stale even if it holds user data, and
-  archives whose header exceeds 4 GiB raise `ValueError`.
+  archives whose header exceeds 4 GiB raise `ValueError`. A destination volume
+  that cannot hold files larger than 4 GiB (FAT-family filesystems) rejects
+  oversized single files and archives with `ValueError`. This volume check is
+  best effort: filesystems hidden behind a bridge (such as a Windows drive
+  reached through WSL's `/mnt`) cannot be recognized.
 - On POSIX, packing records the owner's execute bit as `executable: true`;
   extraction restores such files with mode `0755`.
 - Special source files that are neither regular files, directories, nor links
@@ -197,7 +201,7 @@ pack("app", "app.asar", unpack_extensions={".node", ".dll"}, filter=include)
 - 写入整文件及 4 MiB 分块 SHA-256 元数据。`verify=True` 在存在 `integrity.hash` 时校验整文件，不单独校验分块哈希，也不验证归档来源；没有完整性元数据的文件仍可读取。
 - 头部 Pickle 上限为 50 MiB，并检查归档内数据范围。畸形结构——超长十进制偏移、超大 JSON 整数、布尔值 size、过深嵌套的文件表、条目名与路径中的 NUL 字符和 Windows 盘符段——一律抛出 `AsarFormatError`，不会泄漏解析器内部异常。旁挂文件的实际路径必须位于旁挂目录内；旁挂根目录不能是符号链接或 junction。
 - 解包拒绝覆盖已有文件或链接。打包和解包均非事务操作，失败后可能留下部分输出。
-- 打包直接覆盖归档并清理旧旁挂目录；清理前拒绝源目录等于或位于实际旁挂目录内部的情况。输出位于源目录中时，会从遍历中排除。与旁挂目录同名的目录会被当作旧旁挂清理（即使其中是用户数据）；头部超过 4 GiB 的归档抛出 `ValueError`。
+- 打包直接覆盖归档并清理旧旁挂目录；清理前拒绝源目录等于或位于实际旁挂目录内部的情况。输出位于源目录中时，会从遍历中排除。与旁挂目录同名的目录会被当作旧旁挂清理（即使其中是用户数据）；头部超过 4 GiB 的归档抛出 `ValueError`。目标卷无法容纳大于 4 GiB 的单文件（FAT 系列文件系统）时，超限的单个文件或整个归档都会抛出 `ValueError`。该卷检测是尽力而为的：被桥接层隐藏的文件系统（例如经 WSL 的 `/mnt` 访问的 Windows 盘）无法识别。
 - POSIX 平台打包时将所有者执行位记录为 `executable: true`，解包时将此类文件权限设为 `0755`。
 - 源目录中既非普通文件、目录也非链接的特殊文件（FIFO、socket、设备文件）在打包时跳过并发出 `UserWarning`。
 - 归档格式无法安全表示的源条目名（例如 Windows 驱动器相对名 `C:`）会让 `pack` 抛出 `ValueError`，保证不会写出连 `open_archive` 都会拒绝的归档。

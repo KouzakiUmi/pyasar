@@ -50,8 +50,10 @@ links on Windows. These are intentional API differences from the official tool.
 Newer @electron/asar releases may deduplicate identical file contents, so
 several entries can share one offset; pyasar reads such archives normally but
 never writes them that way. The official writer refuses individual files larger
-than 4 GiB; pyasar packs them, and the decimal-string offset format stays
-valid, but such archives exceed what the official tool itself creates.
+than 4 GiB; pyasar packs them when the destination volume supports them (on
+FAT-family volumes, oversized single files and oversized archives are rejected
+up front), and the decimal-string offset format stays valid, but such archives
+exceed what the official tool itself creates.
 
 See the upstream format description and implementation:
 https://github.com/electron/asar#format
