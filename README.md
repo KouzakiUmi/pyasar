@@ -12,7 +12,7 @@ The PyPI distribution name is `asarx`; the Python import name is `pyasar`.
 ### Installation
 
 ```console
-python -m pip install "pyasar @ git+https://github.com/KouzakiUmi/pyasar.git"
+python -m pip install asarx
 ```
 
 From a local checkout:
@@ -156,7 +156,7 @@ PyPI 分发包名为 `asarx`，Python 导入名仍为 `pyasar`。
 ### 安装
 
 ```console
-python -m pip install "pyasar @ git+https://github.com/KouzakiUmi/pyasar.git"
+python -m pip install asarx
 ```
 
 在本地仓库中安装：
