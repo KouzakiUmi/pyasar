@@ -3,12 +3,24 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyasar"
+name = "asarx"
 version = "0.1.0"
 description = "Safe, dependency-free tools for Electron ASAR archives"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
+keywords = ["asar", "electron", "archive"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/KouzakiUmi/pyasar"
+Repository = "https://github.com/KouzakiUmi/pyasar"
+Issues = "https://github.com/KouzakiUmi/pyasar/issues"
+Documentation = "https://github.com/KouzakiUmi/pyasar/blob/main/docs/API.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

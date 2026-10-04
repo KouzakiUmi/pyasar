@@ -7,6 +7,8 @@
 Python library for reading, validating, extracting, and creating Electron ASAR
 archives. Requires Python 3.9+; no runtime dependencies.
 
+The PyPI distribution name is `asarx`; the Python import name is `pyasar`.
+
 ### Installation
 
 ```console
@@ -148,6 +150,8 @@ for details.
 
 用于读取、验证、解包和创建 Electron ASAR 归档的 Python 库。
 要求 Python 3.9 及以上版本，无运行时第三方依赖。
+
+PyPI 分发包名为 `asarx`，Python 导入名仍为 `pyasar`。
 
 ### 安装
 
